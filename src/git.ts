@@ -76,6 +76,11 @@ export function commitList(cwd: string, base: string, branch: string): string | 
 	const result = git(cwd, ["log", "--oneline", `${base}..${branch}`]);
 	return result.status === 0 ? result.stdout.trimEnd() : undefined;
 }
+export function onRemoteBranch(cwd: string, ref: string): boolean | undefined {
+	if (!git(cwd, ["remote"]).stdout.trim()) return undefined;
+	const result = git(cwd, ["branch", "-r", "--contains", ref]);
+	return result.status === 0 ? Boolean(result.stdout.trim()) : undefined;
+}
 export function cleanWorktree(cwd: string): boolean {
 	if (!existsSync(cwd)) return false;
 	const result = git(cwd, ["status", "--porcelain"]);

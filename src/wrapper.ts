@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { containEscapedDescendants, discoverEscapedDescendants, processAlive, processInfo, signalProcessGroup } from "./contain.ts";
 import { deliverFinishWebhook } from "./finish-webhook.ts";
-import { changedFileCount, commitList } from "./git.ts";
+import { changedFileCount, commitList, onRemoteBranch } from "./git.ts";
 import { settleJobTab } from "./herdr.ts";
 import { createClaudeStreamParser, createStreamParser, type StreamEvent } from "./stream.ts";
 
@@ -118,7 +119,7 @@ export async function runInternalJob(): Promise<void> {
 	// A detached job must not inherit the coordinator's Herdr pane.
 	for (const name of Object.keys(childEnvironment)) if (name.startsWith("HERDR_")) delete childEnvironment[name];
 	const parser = engine === "claude" ? createClaudeStreamParser() : createStreamParser();
-	const seen = { activity: "", assistant: "", stop: "" };
+	const seen = { activity: "", assistant: "", stop: "", handedOff: false };
 	const failLog = (error: unknown) => appendLimenLog(jobDir, `log write failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
 	const apply = (events: readonly StreamEvent[]) => {
 		pending = pending
@@ -189,6 +190,7 @@ export const requestedTerminal = (reason: string): "done" | "stopped" => (reason
 export async function finalizeJob(jobDir: string, state: "done" | "failed" | "stopped", detail: string, shutdownDeadline?: number): Promise<void> {
 	if (["done", "failed", "stopped"].includes(await textFile(`${jobDir}/state`))) return;
 	await recordCommits(jobDir).catch(() => {});
+	await writeHandoff(jobDir, state, detail).catch((error) => appendLimenLog(jobDir, `handoff write failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => {}));
 	await atomicWrite(`${jobDir}/finished-at`, `${new Date().toISOString()}\n`);
 	// The terminal log line lands before the state flip; state is the commit point observers key on, and the story must already be durable when they see it.
 	const inbox = await readdir(`${jobDir}/steer/inbox`).catch(() => []);
@@ -212,7 +214,38 @@ export async function recordCommits(jobDir: string): Promise<void> {
 	const commits = commitList(worktree, base, branch);
 	if (commits !== undefined) await atomicWrite(`${jobDir}/commits`, commits ? `${commits}\n` : "");
 }
-async function recordEvents(jobDir: string, events: readonly StreamEvent[], nextCount: () => number, seen: { activity: string; assistant: string; stop: string }): Promise<void> {
+export type Handoff = {
+	readonly status: "done" | "incomplete" | "failed" | "stopped";
+	readonly reason: string;
+	readonly summary: string;
+	readonly pr_url: string;
+	readonly tests: readonly string[];
+	readonly commits: number;
+	readonly unpushed: boolean;
+};
+// The structured handoff is what the finish webhook and the coordinator read; the chat transcript is not.
+export async function writeHandoff(jobDir: string, state: "done" | "failed" | "stopped", detail: string): Promise<Handoff> {
+	const [result, commitText, branch, worktree] = await Promise.all([textFile(`${jobDir}/result`), textFile(`${jobDir}/commits`), textFile(`${jobDir}/branch`), textFile(`${jobDir}/worktree`)]);
+	const checkpoint = existsSync(`${jobDir}/checkpoint.md`);
+	const commits = commitText ? commitText.split("\n").length : 0;
+	const pr_url = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.exec(result)?.[0] ?? "";
+	const unpushed = commits > 0 && !pr_url && Boolean(branch && worktree) && onRemoteBranch(worktree, branch) === false;
+	const reasons = [state === "done" && checkpoint ? "budget checkpoint: checkpoint.md present, work continues" : detail];
+	if (unpushed) reasons.push(`work only on job branch ${branch}: ${commits} commit(s), no remote branch and no PR`);
+	const handoff: Handoff = {
+		status: state === "done" && checkpoint ? "incomplete" : state,
+		reason: reasons.join("; "),
+		summary: result.split("\n")[0] ?? "",
+		pr_url,
+		tests: result.split("\n").filter((line) => /\b\d+\s+(?:tests?\s+)?(?:pass|passed|passing|fail|failed|failing)\b/i.test(line)).slice(0, 5),
+		commits,
+		unpushed,
+	};
+	await atomicWrite(`${jobDir}/handoff.json`, `${JSON.stringify(handoff, null, 2)}\n`);
+	if (unpushed) await appendLimenLog(jobDir, `unpushed: ${handoff.reason}`);
+	return handoff;
+}
+async function recordEvents(jobDir: string, events: readonly StreamEvent[], nextCount: () => number, seen: { activity: string; assistant: string; stop: string; handedOff: boolean }): Promise<void> {
 	for (const event of events) {
 		if (event.kind === "tool") {
 			seen.activity = "tool";
@@ -227,6 +260,14 @@ async function recordEvents(jobDir: string, events: readonly StreamEvent[], next
 			if (seen.activity !== event.name) await appendFile(`${jobDir}/log`, `${(seen.activity = event.name)}\n`);
 		} else if (event.kind === "session") {
 			await atomicWrite(`${jobDir}/claude-session`, `${event.id}\n`);
+		} else if (event.kind === "turn-end") {
+			if (seen.assistant) seen.handedOff = true;
+		} else if (event.kind === "assistant" && seen.handedOff) {
+			// A turn after the first handoff answers a late background notice; it must not replace the handoff.
+			if (event.text) {
+				await appendFile(`${jobDir}/result-late`, `${event.text}\n`);
+				await appendFile(`${jobDir}/log`, `${event.text}\n`);
+			}
 		} else if (event.kind === "assistant") {
 			seen.assistant = event.text;
 			seen.stop = event.stopReason ?? "";

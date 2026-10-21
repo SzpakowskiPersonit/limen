@@ -4,7 +4,8 @@ export type StreamEvent =
 	| { readonly kind: "assistant"; readonly text: string; readonly stopReason?: string }
 	| { readonly kind: "tool"; readonly name: string; readonly detail?: string }
 	| { readonly kind: "activity"; readonly name: Activity }
-	| { readonly kind: "session"; readonly id: string };
+	| { readonly kind: "session"; readonly id: string }
+	| { readonly kind: "turn-end" };
 export function createStreamParser(): { push(chunk: string): StreamEvent[]; flush(): StreamEvent[] } {
 	let buffer = "";
 	const take = (line: string): StreamEvent | undefined => {
@@ -75,7 +76,7 @@ function interpretClaude(event: unknown): StreamEvent[] {
 	// coordinator files; the closing result only has to speak when the run failed.
 	if (event.type === "result") {
 		const subtype = "subtype" in event && typeof event.subtype === "string" ? event.subtype : "unknown";
-		if (!(("is_error" in event && event.is_error === true) || subtype !== "success")) return [];
+		if (!(("is_error" in event && event.is_error === true) || subtype !== "success")) return [{ kind: "turn-end" }];
 		const text = "result" in event && typeof event.result === "string" ? event.result.trim() : "";
 		return [{ kind: "assistant", text, stopReason: `error: ${subtype}` }];
 	}
@@ -108,6 +109,7 @@ function interpret(event: unknown): StreamEvent | undefined {
 			stopReason = assistantStopReason(message);
 		return { kind: "assistant", text, ...(stopReason ? { stopReason } : {}) };
 	}
+	if (event.type === "agent_end") return { kind: "turn-end" };
 	if (event.type === "agent_start" || event.type === "turn_start" || event.type === "message_start" || event.type === "message_update") return { kind: "activity", name: "think" };
 }
 export function assistantText(message: unknown): string {

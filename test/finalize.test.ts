@@ -199,3 +199,46 @@ setInterval(() => {}, 1000);
 	assert.equal((await readFile(join(job, "finished-at"), "utf8")).trim(), finished.trim());
 	assert.equal((await readFile(join(job, "log"), "utf8")).match(/\] (?:done|failed|stopped):/g)?.length, 1);
 });
+
+const lateNoticePi = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Handoff: PR https://github.com/o/r/pull/7, 12 tests passed" }] } }));
+console.log(JSON.stringify({ type: "agent_end" }));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "This late result from bg_3 changes nothing." }] } }));
+console.log(JSON.stringify({ type: "agent_end" }));
+`;
+
+test("wrapper keeps the first handoff when a background notice arrives after it", async (context) => {
+	const scratch = await scratchRepo(lateNoticePi);
+	context.after(() => wipeScratch(scratch));
+	limen(scratch, "init");
+	const id = onlyJobId(limen(scratch, "spawn", "--detached", "hand off").stdout);
+	await waitForState(scratch.root, id, "done");
+	const job = join(scratch.root, ".limen/jobs", id);
+	assert.equal(await readFile(join(job, "result"), "utf8"), "Handoff: PR https://github.com/o/r/pull/7, 12 tests passed\n");
+	assert.match(await readFile(join(job, "result-late"), "utf8"), /bg_3/);
+	const handoff = JSON.parse(await readFile(join(job, "handoff.json"), "utf8"));
+	assert.equal(handoff.status, "done");
+	assert.equal(handoff.pr_url, "https://github.com/o/r/pull/7");
+	assert.deepEqual(handoff.tests, ["Handoff: PR https://github.com/o/r/pull/7, 12 tests passed"]);
+});
+
+test("handoff reports commits left only on the job branch without a remote branch or PR", async (context) => {
+	const scratch = await scratchRepo();
+	context.after(() => wipeScratch(scratch));
+	const remote = join(dirname(scratch.root), "remote.git");
+	spawnSync("git", ["init", "--bare", "-q", remote]);
+	spawnSync("git", ["-C", scratch.root, "remote", "add", "origin", remote]);
+	spawnSync("git", ["-C", scratch.root, "push", "-q", "origin", "HEAD"]);
+	spawnSync("git", ["-C", scratch.root, "fetch", "-q", "origin"]);
+	limen(scratch, "init");
+	const id = onlyJobId(limen(scratch, "spawn", "--detached", "make commit").stdout);
+	await waitForState(scratch.root, id, "done");
+	const job = join(scratch.root, ".limen/jobs", id);
+	const handoff = JSON.parse(await readFile(join(job, "handoff.json"), "utf8"));
+	assert.equal(handoff.commits, 1);
+	assert.equal(handoff.unpushed, true);
+	assert.match(handoff.reason, /no remote branch and no PR/);
+	assert.match(await readFile(join(job, "log"), "utf8"), /unpushed: /);
+});

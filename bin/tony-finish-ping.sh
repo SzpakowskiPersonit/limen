@@ -12,7 +12,16 @@ function fail(message) {
 }
 
 const args = process.argv.slice(2);
-if (args.length !== 3) fail('usage: tony-finish-ping.sh <label> <status> <branch>');
+if (args.length !== 3 && args.length !== 4) fail('usage: tony-finish-ping.sh <label> <status> <branch> [handoff.json]');
+let handoff = {};
+if (args[3]) {
+  try {
+    const { reason, summary, pr_url, tests, commits, unpushed } = JSON.parse(readFileSync(args[3], 'utf8'));
+    handoff = { reason, summary, pr_url, tests, commits, unpushed };
+  } catch {
+    fail('cannot read the handoff file');
+  }
+}
 
 let envFile = process.env.TONY_FINISH_WEBHOOK_ENV;
 if (envFile !== undefined) {
@@ -63,7 +72,7 @@ try {
   const response = await fetch(url, {
     method: 'POST', redirect: 'manual', signal: controller.signal,
     headers: { Authorization: auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job: args[0], status: args[1], branch: args[2] }),
+    body: JSON.stringify({ ...handoff, job: args[0], status: args[1], branch: args[2] }),
   });
   controller.abort(); // Do not read or print a possibly sensitive response body.
   if (response.status < 200 || response.status >= 300) fail(`HTTP ${response.status} rejected`);

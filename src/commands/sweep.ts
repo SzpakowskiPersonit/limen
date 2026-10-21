@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { installSeatSweep, showSeatNotification, uninstallSeatSweep, updateRegisteredProjects } from "../../hook/seat.ts";
+import { retryFinishWebhooks } from "../finish-webhook.ts";
 import { confirmDeadJobs } from "../reap.ts";
 
 const text = (path: string) => (fs.existsSync(path) ? fs.readFileSync(path, "utf8").trim() : "");
@@ -17,6 +18,7 @@ async function sweepProject(root: string): Promise<void> {
 	const jobs = join(root, ".limen", "jobs"),
 		threshold = positive("LIMEN_SEAT_RING_MS", 5 * 60_000);
 	await confirmDeadJobs(jobs);
+	await retryFinishWebhooks(jobs);
 	if (Date.now() - modified(join(root, ".limen", "last-sweep")) < threshold) return;
 	for (const entry of fs.existsSync(jobs) ? fs.readdirSync(jobs, { withFileTypes: true }) : []) {
 		if (!entry.isDirectory()) continue;

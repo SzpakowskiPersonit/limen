@@ -99,7 +99,7 @@ test("automatic delivery invokes the real canonical helper with synthetic dotenv
 	const job = join(f.root, ".limen/jobs", id);
 	assert.match(await delivery(job), /^accepted:/);
 	const request = (await observe(f.observations))[0];
-	assert.deepEqual(request.body, { job: 'real helper "quoted" \\', status: "done", branch: (await readFile(join(job, "branch"), "utf8")).trim() });
+	assert.deepEqual(request.body, { reason: "pi exited 0", summary: "fake pi completed", pr_url: "", tests: [], commits: 0, unpushed: false, job: 'real helper "quoted" \\', status: "done", branch: (await readFile(join(job, "branch"), "utf8")).trim() });
 	assert.deepEqual(request.headers, { Authorization: "Bearer synthetic-only", "Content-Type": "application/json" });
 	assert.equal(request.state, "done");
 	assert.equal(request.method, "POST");
@@ -117,7 +117,7 @@ test("detached completion sends exact arguments only after durable state using a
 	const id = onlyJobId(f.command(["spawn", "--detached", "--label", label, "--branch", branch, "finish without manual ping"], { TONY_FINISH_WEBHOOK_ENV: "private config.env" }));
 	const job = join(f.root, ".limen/jobs", id);
 	assert.match(await delivery(job), /^accepted: sender exited 0 \(owner wake unobserved\)/);
-	assert.deepEqual(await observe(f.observations), [{ args: [label, "done", branch], config: selected, state: "done", finished: true, pid: false }]);
+	assert.deepEqual(await observe(f.observations), [{ args: [label, "done", branch, join(job, "handoff.json")], config: selected, state: "done", finished: true, pid: false }]);
 	assert.equal(await readFile(join(job, "finish-webhook-env"), "utf8"), `${selected}\n`);
 	assert.equal((await stat(join(job, "finish-webhook-env"))).mode & 0o777, 0o600);
 	assert.doesNotMatch(await readFile(join(job, "log"), "utf8"), /synthetic-secret/);
@@ -286,4 +286,43 @@ test("continuation retains only its parent's config path even when the caller se
 	assert.equal(await readFile(join(job, "finish-webhook-env"), "utf8"), `${selected}\n`);
 	assert.equal((await observe(f.observations)).length, 2);
 	assert.equal((await observe(f.observations))[1].config, selected);
+});
+
+test("finish webhook status is incomplete with a reason when the job ended at a budget checkpoint", async (context) => {
+	const f = await fixture(context);
+	const job = await bareJob(f.root);
+	await writeFile(join(job, "finish-webhook-env"), `${await f.config(join(f.parent, "private.env"))}\n`);
+	await writeFile(join(job, "checkpoint.md"), "stopped at 80% budget\n");
+	await runModule(f.pkg, { ...f.env, TEST_JOB_DIR: job }, `const { finalizeJob } = await import('./src/wrapper.ts'); await finalizeJob(${JSON.stringify(job)}, 'done', 'pi exited 0');`);
+	assert.match(await delivery(job), /^accepted:/);
+	assert.deepEqual((await observe(f.observations))[0].args, ["finish label", "incomplete", "main", join(job, "handoff.json")]);
+	const handoff = JSON.parse(await readFile(join(job, "handoff.json"), "utf8"));
+	assert.equal(handoff.status, "incomplete");
+	assert.match(handoff.reason, /budget checkpoint/);
+	assert.equal(await readFile(join(job, "state"), "utf8"), "done\n");
+});
+
+test("a definitely failed finish webhook is resent from the outbox after its backoff, until accepted", async (context) => {
+	const f = await fixture(context);
+	const job = await bareJob(f.root);
+	const config = await f.config(join(f.parent, "private.env"), { exit: 22 });
+	await writeFile(join(job, "finish-webhook-env"), `${config}\n`);
+	const finalize = `const { finalizeJob } = await import('./src/wrapper.ts'); await finalizeJob(${JSON.stringify(job)}, 'done', 'pi exited 0');`;
+	const sweep = `const { retryFinishWebhooks } = await import('./src/finish-webhook.ts'); await retryFinishWebhooks(${JSON.stringify(dirname(job))});`;
+	await runModule(f.pkg, { ...f.env, TEST_JOB_DIR: job }, finalize);
+	assert.match(await delivery(job), /^failed: sender exited 22/);
+	await runModule(f.pkg, { ...f.env, TEST_JOB_DIR: job }, sweep);
+	assert.equal((await observe(f.observations)).length, 1, "backoff not yet elapsed");
+	const retry = { ...f.env, TEST_JOB_DIR: job, LIMEN_FINISH_RETRY_MS: "0" };
+	await writeFile(join(job, "finish-webhook-outbox"), `1 0\n`);
+	await runModule(f.pkg, retry, sweep);
+	assert.equal((await observe(f.observations)).length, 2);
+	assert.equal(await readFile(join(job, "finish-webhook-outbox"), "utf8"), "2 " + (await readFile(join(job, "finish-webhook-outbox"), "utf8")).split(" ")[1]);
+	await f.config(join(f.parent, "private.env"));
+	await writeFile(join(job, "finish-webhook-outbox"), `2 0\n`);
+	await runModule(f.pkg, retry, sweep);
+	await runModule(f.pkg, retry, sweep);
+	assert.equal((await observe(f.observations)).length, 3);
+	assert.match(await readFile(join(job, "finish-webhook"), "utf8"), /retry 2: accepted:/);
+	await assert.rejects(stat(join(job, "finish-webhook-outbox")));
 });
