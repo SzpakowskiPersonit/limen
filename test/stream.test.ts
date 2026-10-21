@@ -42,7 +42,7 @@ test("claude events become the same log, tool names, and one closing result", ()
 		{ kind: "activity", name: "think" },
 		{ kind: "assistant", text: "the verdict" },
 	]);
-	assert.deepEqual(parser.push('{"type":"result","subtype":"success","is_error":false,"result":"the verdict"}\n'), []);
+	assert.deepEqual(parser.push('{"type":"result","subtype":"success","is_error":false,"result":"the verdict"}\n'), [{ kind: "turn-end" }]);
 	assert.deepEqual(parser.push('{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}\n'), [
 		{ kind: "assistant", text: "", stopReason: "error: error_during_execution" },
 	]);

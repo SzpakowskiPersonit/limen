@@ -223,7 +223,7 @@ test("legacy home config is available only for manual invocation outside Git, no
 	assert.equal(f.request().url, DESTINATION);
 });
 
-test("env files are data, never shell scripts, and the CLI requires exactly three arguments", async (t) => {
+test("env files are data, never shell scripts, and the CLI requires three arguments or three plus a handoff file", async (t) => {
 	const f = await fixture();
 	t.after(f.cleanup);
 	const marker = join(f.root, "executed");
@@ -231,7 +231,7 @@ test("env files are data, never shell scripts, and the CLI requires exactly thre
 	assert.equal(f.run({ TONY_FINISH_WEBHOOK_ENV: path }).status, 1);
 	assert.equal(existsSync(marker), false);
 	assert.equal(existsSync(f.capture), false);
-	for (const args of [[], ["label"], ["label", "done"], ["label", "done", "branch", "extra"]]) {
+	for (const args of [[], ["label"], ["label", "done"], ["label", "done", "branch", "handoff.json", "extra"]]) {
 		const result = f.run({ TONY_FINISH_WEBHOOK_ENV: path }, f.root, args);
 		assert.equal(result.status, 1);
 		assert.match(result.stderr, /usage:/);

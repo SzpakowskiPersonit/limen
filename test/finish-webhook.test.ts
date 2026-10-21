@@ -99,7 +99,17 @@ test("automatic delivery invokes the real canonical helper with synthetic dotenv
 	const job = join(f.root, ".limen/jobs", id);
 	assert.match(await delivery(job), /^accepted:/);
 	const request = (await observe(f.observations))[0];
-	assert.deepEqual(request.body, { reason: "pi exited 0", summary: "fake pi completed", pr_url: "", tests: [], commits: 0, unpushed: false, job: 'real helper "quoted" \\', status: "done", branch: (await readFile(join(job, "branch"), "utf8")).trim() });
+	assert.deepEqual(request.body, {
+		reason: "pi exited 0",
+		summary: "fake pi completed",
+		pr_url: "",
+		tests: [],
+		commits: 0,
+		unpushed: false,
+		job: 'real helper "quoted" \\',
+		status: "done",
+		branch: (await readFile(join(job, "branch"), "utf8")).trim(),
+	});
 	assert.deepEqual(request.headers, { Authorization: "Bearer synthetic-only", "Content-Type": "application/json" });
 	assert.equal(request.state, "done");
 	assert.equal(request.method, "POST");
@@ -293,7 +303,11 @@ test("finish webhook status is incomplete with a reason when the job ended at a 
 	const job = await bareJob(f.root);
 	await writeFile(join(job, "finish-webhook-env"), `${await f.config(join(f.parent, "private.env"))}\n`);
 	await writeFile(join(job, "checkpoint.md"), "stopped at 80% budget\n");
-	await runModule(f.pkg, { ...f.env, TEST_JOB_DIR: job }, `const { finalizeJob } = await import('./src/wrapper.ts'); await finalizeJob(${JSON.stringify(job)}, 'done', 'pi exited 0');`);
+	await runModule(
+		f.pkg,
+		{ ...f.env, TEST_JOB_DIR: job },
+		`const { finalizeJob } = await import('./src/wrapper.ts'); await finalizeJob(${JSON.stringify(job)}, 'done', 'pi exited 0');`,
+	);
 	assert.match(await delivery(job), /^accepted:/);
 	assert.deepEqual((await observe(f.observations))[0].args, ["finish label", "incomplete", "main", join(job, "handoff.json")]);
 	const handoff = JSON.parse(await readFile(join(job, "handoff.json"), "utf8"));

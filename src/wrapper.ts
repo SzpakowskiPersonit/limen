@@ -190,7 +190,9 @@ export const requestedTerminal = (reason: string): "done" | "stopped" => (reason
 export async function finalizeJob(jobDir: string, state: "done" | "failed" | "stopped", detail: string, shutdownDeadline?: number): Promise<void> {
 	if (["done", "failed", "stopped"].includes(await textFile(`${jobDir}/state`))) return;
 	await recordCommits(jobDir).catch(() => {});
-	await writeHandoff(jobDir, state, detail).catch((error) => appendLimenLog(jobDir, `handoff write failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => {}));
+	await writeHandoff(jobDir, state, detail).catch((error) =>
+		appendLimenLog(jobDir, `handoff write failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => {}),
+	);
 	await atomicWrite(`${jobDir}/finished-at`, `${new Date().toISOString()}\n`);
 	// The terminal log line lands before the state flip; state is the commit point observers key on, and the story must already be durable when they see it.
 	const inbox = await readdir(`${jobDir}/steer/inbox`).catch(() => []);
@@ -225,7 +227,12 @@ export type Handoff = {
 };
 // The structured handoff is what the finish webhook and the coordinator read; the chat transcript is not.
 export async function writeHandoff(jobDir: string, state: "done" | "failed" | "stopped", detail: string): Promise<Handoff> {
-	const [result, commitText, branch, worktree] = await Promise.all([textFile(`${jobDir}/result`), textFile(`${jobDir}/commits`), textFile(`${jobDir}/branch`), textFile(`${jobDir}/worktree`)]);
+	const [result, commitText, branch, worktree] = await Promise.all([
+		textFile(`${jobDir}/result`),
+		textFile(`${jobDir}/commits`),
+		textFile(`${jobDir}/branch`),
+		textFile(`${jobDir}/worktree`),
+	]);
 	const checkpoint = existsSync(`${jobDir}/checkpoint.md`);
 	const commits = commitText ? commitText.split("\n").length : 0;
 	const pr_url = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.exec(result)?.[0] ?? "";
@@ -237,7 +244,10 @@ export async function writeHandoff(jobDir: string, state: "done" | "failed" | "s
 		reason: reasons.join("; "),
 		summary: result.split("\n")[0] ?? "",
 		pr_url,
-		tests: result.split("\n").filter((line) => /\b\d+\s+(?:tests?\s+)?(?:pass|passed|passing|fail|failed|failing)\b/i.test(line)).slice(0, 5),
+		tests: result
+			.split("\n")
+			.filter((line) => /\b\d+\s+(?:tests?\s+)?(?:pass|passed|passing|fail|failed|failing)\b/i.test(line))
+			.slice(0, 5),
 		commits,
 		unpushed,
 	};
@@ -245,7 +255,12 @@ export async function writeHandoff(jobDir: string, state: "done" | "failed" | "s
 	if (unpushed) await appendLimenLog(jobDir, `unpushed: ${handoff.reason}`);
 	return handoff;
 }
-async function recordEvents(jobDir: string, events: readonly StreamEvent[], nextCount: () => number, seen: { activity: string; assistant: string; stop: string; handedOff: boolean }): Promise<void> {
+async function recordEvents(
+	jobDir: string,
+	events: readonly StreamEvent[],
+	nextCount: () => number,
+	seen: { activity: string; assistant: string; stop: string; handedOff: boolean },
+): Promise<void> {
 	for (const event of events) {
 		if (event.kind === "tool") {
 			seen.activity = "tool";
