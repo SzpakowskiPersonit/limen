@@ -3,7 +3,8 @@ export type StreamEvent =
 	| { readonly kind: "log"; readonly line: string }
 	| { readonly kind: "assistant"; readonly text: string; readonly stopReason?: string }
 	| { readonly kind: "tool"; readonly name: string; readonly detail?: string }
-	| { readonly kind: "activity"; readonly name: Activity };
+	| { readonly kind: "activity"; readonly name: Activity }
+	| { readonly kind: "turn-end" };
 export function createStreamParser(): { push(chunk: string): StreamEvent[]; flush(): StreamEvent[] } {
 	let buffer = "";
 	const take = (line: string): StreamEvent | undefined => {
@@ -54,6 +55,10 @@ function interpret(event: unknown): StreamEvent | undefined {
 		const text = assistantText(message),
 			stopReason = assistantStopReason(message);
 		return { kind: "assistant", text, ...(stopReason ? { stopReason } : {}) };
+	}
+	// omp marks a run that goes on with willContinue; only the run's real end hands off.
+	if (event.type === "agent_end" && !("willContinue" in event && event.willContinue === true)) {
+		return { kind: "turn-end" };
 	}
 	if (
 		event.type === "agent_start" ||

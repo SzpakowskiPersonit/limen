@@ -188,7 +188,17 @@ export async function runInternalJob(): Promise<void> {
 		}
 	}
 	const parser = createStreamParser();
-	const seen = { activity: "", activityAt: 0, assistant: "", stop: "", tool: "", progress: 0 };
+	// A group member is woken again by group progress after a turn, so only a solo job freezes its first handoff.
+	const seen = {
+		activity: "",
+		activityAt: 0,
+		assistant: "",
+		stop: "",
+		tool: "",
+		progress: 0,
+		handedOff: false,
+		freezes: !membership,
+	};
 	const failLog = (error: unknown) =>
 		appendLimenLog(jobDir, `log write failed: ${error instanceof Error ? error.message : String(error)}`).catch(
 			() => {},
@@ -371,7 +381,16 @@ async function recordEvents(
 	jobDir: string,
 	events: readonly StreamEvent[],
 	nextCount: () => number,
-	seen: { activity: string; activityAt: number; assistant: string; stop: string; tool: string; progress: number },
+	seen: {
+		activity: string;
+		activityAt: number;
+		assistant: string;
+		stop: string;
+		tool: string;
+		progress: number;
+		handedOff: boolean;
+		readonly freezes: boolean;
+	},
 ): Promise<void> {
 	for (const event of events) {
 		if (event.kind === "tool") {
@@ -392,16 +411,32 @@ async function recordEvents(
 				seen.activity = event.name;
 				await appendFile(`${jobDir}/log`, `${event.name}\n`);
 			}
+		} else if (event.kind === "turn-end") {
+			seen.handedOff ||= seen.freezes && Boolean(seen.assistant);
 		} else if (event.kind === "assistant") {
-			seen.assistant = event.text;
-			seen.stop = event.stopReason ?? "";
-			if (event.text) {
-				await appendFile(`${jobDir}/log`, `${event.text}\n`);
-			}
+			await recordAssistant(jobDir, event, seen);
 		} else {
 			seen.progress += 1;
 			await appendFile(`${jobDir}/log`, `${event.line}\n`);
 		}
+	}
+}
+/** A turn after the first handoff answers a late background notice; its words go to `result-late`, never into the handoff. */
+async function recordAssistant(
+	jobDir: string,
+	event: { readonly text: string; readonly stopReason?: string },
+	seen: { assistant: string; stop: string; handedOff: boolean },
+): Promise<void> {
+	if (seen.handedOff) {
+		if (event.text) {
+			await appendFile(`${jobDir}/result-late`, `${event.text}\n`);
+		}
+	} else {
+		seen.assistant = event.text;
+		seen.stop = event.stopReason ?? "";
+	}
+	if (event.text) {
+		await appendFile(`${jobDir}/log`, `${event.text}\n`);
 	}
 }
 function requiredEnvironment(name: string): string {

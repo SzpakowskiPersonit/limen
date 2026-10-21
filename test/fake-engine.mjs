@@ -2,7 +2,8 @@
 // The one fake pi/omp. It loads the real hook extensions Limen passes, runs the task text as a script, and records
 // what it saw in the record dir (the parent of --session-dir, so a job's own dir). Script lines:
 //   commit · fail <code> · error (assistant stop reason "error") · say <text> · tool <command> · block · orphan · finish <handoff>
-//   · /<command> <args> (runs a command a hook registered, as a user typing it)
+//   · /<command> <args> (runs a command a hook registered, as a user typing it) · checkpoint (writes checkpoint.md in the
+//   record dir) · late <text> (after the run ends, one more run replies <text>, as a late background notice does)
 // `block` writes fake-blocked-<n> and waits for one write to the FIFO fake-gate. Records: fake-argv.json, fake-env.json
 // (variable names), fake-task.txt, fake-system.txt (system prompt after before_agent_start), fake-context.txt (the hidden
 // context messages before_agent_start returned), fake-events.jsonl, and one transcript line per run in --session-dir.
@@ -132,6 +133,7 @@ emit({ type: "agent_start" });
 let reply = "fake engine done";
 let stopReason;
 let code = 0;
+const late = [];
 for (const line of task.split("\n")) {
 	const [word = "", ...rest] = line.trim().split(" ");
 	const value = rest.join(" ");
@@ -156,6 +158,10 @@ for (const line of task.split("\n")) {
 		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)"], { detached: true, stdio: "ignore" });
 		child.unref();
 		writeFileSync(join(dir, "fake-orphan"), String(child.pid));
+	} else if (word === "checkpoint") {
+		writeFileSync(join(dir, "checkpoint.md"), "Stopped at the budget signal.\n");
+	} else if (word === "late") {
+		late.push(value);
 	} else if (word === "finish") {
 		await tools.get("finish")?.execute("fake", { handoff: value }, undefined, undefined, context);
 	} else if (word.startsWith("/")) {
@@ -164,6 +170,12 @@ for (const line of task.split("\n")) {
 }
 turns = turns.then(() => turn([{ role: "user", content: [{ type: "text", text: task }] }], reply, stopReason));
 await turns;
+emit({ type: "agent_end" });
+for (const text of late) {
+	emit({ type: "agent_start" });
+	emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } });
+	emit({ type: "agent_end" });
+}
 await fire("session_shutdown", {});
 record({ event: "exit", code });
 process.exit(code);

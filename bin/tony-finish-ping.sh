@@ -135,6 +135,7 @@ const kind = /^(job|coordinator|lead|webhook)\.[a-z][a-z-]{0,31}$/.test(process.
 const fields = Object.entries({
   event: kind, plant: oneLine(process.env.LIMEN_FINISH_PLANT, 120), title: oneLine(args[0], 200),
   jobId: oneLine(process.env.LIMEN_FINISH_ID, 160), reason: oneLine(process.env.LIMEN_FINISH_REASON, 300),
+  prUrl: /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(process.env.LIMEN_FINISH_PR_URL ?? '') ? process.env.LIMEN_FINISH_PR_URL : undefined,
 }).filter(([, value]) => value !== undefined);
 function send(target, index) {
   return new Promise(resolve => {

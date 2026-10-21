@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import type { Handoff } from "../job/handoff.ts";
 import { isTerminal, type TerminalState } from "../job/job.ts";
 import { textFile } from "../job/record.ts";
 import { currentBranch, listWorktrees, ticketAuthor, workspaceRoot } from "../project/git.ts";
@@ -22,6 +23,7 @@ export type PlantEvent = {
 	readonly plant: string;
 	readonly author?: string;
 	readonly handoff?: string;
+	readonly prUrl?: string;
 };
 export function finishWebhookEnv(root: string, cwd: string, explicit = process.env.LIMEN_FINISH_WEBHOOK_ENV): string {
 	if (explicit !== undefined) {
@@ -78,6 +80,7 @@ export async function deliverFinishWebhook(jobDir: string, detail = ""): Promise
 		}
 		throw error;
 	}
+	const handoff = await readHandoff(jobDir);
 	// A done job's reason is its handoff's first text line, without Markdown markers; every other end names the finish detail, which is the failed gate.
 	const summary =
 		state === "done"
@@ -86,13 +89,34 @@ export async function deliverFinishWebhook(jobDir: string, detail = ""): Promise
 					.map((line) => line.replace(/^[\s#>*-]+/, "").trim())
 					.find(Boolean) ?? "")
 			: "";
+	const status = handoff.status === "incomplete" ? "incomplete" : state;
 	const event: PlantEvent = {
 		...(await jobFields(jobDir)),
-		kind: terminalKind(state, detail),
-		status: state,
-		reason: summary || detail || state,
+		kind: handoff.follow_up
+			? "job.review-failed"
+			: status === "incomplete"
+				? "job.incomplete"
+				: terminalKind(state, detail),
+		status,
+		reason:
+			status === "incomplete"
+				? (handoff.reason ?? detail)
+				: [summary || detail || state, handoff.unpushed ? handoff.reason : ""].filter(Boolean).join("; "),
+		...(status === "incomplete"
+			? { handoff: "Job stopped at a budget checkpoint; the work is not finished. Next step: continue it." }
+			: handoff.follow_up
+				? { handoff: `Review ${handoff.verdict}. Next step: repair it from the follow-up ${handoff.follow_up}.` }
+				: {}),
+		...(handoff.pr_url ? { prUrl: handoff.pr_url } : {}),
 	};
 	await queuePing(resolve(jobDir, "../.."), jobDir, config, event, finishEvent(jobDir), jobDir);
+}
+async function readHandoff(jobDir: string): Promise<Partial<Handoff>> {
+	try {
+		return JSON.parse(await readFile(`${jobDir}/handoff.json`, "utf8")) as Partial<Handoff>;
+	} catch {
+		return {};
+	}
 }
 /** Timeouts and stalled tools end a job as failed; the webhook names the gate that ended it. */
 function terminalKind(state: TerminalState, detail: string): string {
