@@ -62,9 +62,8 @@ test("commits left only on the job branch, with a remote and no PR, are named in
 test("a review FAIL files one repair follow-up per failed head, and a second FAIL of that head adds none", async () => {
 	const branch = jobFile(p, done("commit\nsay candidate ready"), "branch");
 	const sha = git(p.root, "rev-parse", branch).trim();
-	const [first, second] = [1, 2].map(() =>
-		done(`say FAIL ${sha}\nblocking: it breaks`, ["--review", "--branch", branch]),
-	);
+	const review = () => done(`say FAIL ${sha}\nblocking: it breaks`, ["--review", "--branch", branch]);
+	const [first, second] = [review(), review()];
 	const followUp = join(p.root, ".limen/follow-ups", `${sha}.md`);
 	assert.deepEqual(readdirSync(join(p.root, ".limen/follow-ups")), [`${sha}.md`]);
 	assert.match(readFileSync(followUp, "utf8"), new RegExp(`Review job ${first} returned FAIL ${sha}`));
