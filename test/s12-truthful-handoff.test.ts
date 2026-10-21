@@ -1,6 +1,4 @@
-// S12 · Truthful handoff. A job's end is `handoff.json`, not its last chat message: a late background notice never
-// replaces the first handoff, a budget checkpoint ends incomplete, work left only on the job branch is named, and a
-// review FAIL files exactly one repair follow-up per failed head.
+// S12 · A job's end is `handoff.json`, not its last chat message; a review FAIL files one follow-up per failed head.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -10,94 +8,71 @@ import { git, jobFile, plant, requests, spawnJob, until, waitJob } from "./plant
 
 const p = await plant();
 after(p.cleanup);
-const URL = "https://hooks.s12.test/one";
 await writeFile(
 	join(p.root, ".limen/finish-webhook.env"),
-	`LIMEN_FINISH_WEBHOOK_URL='${URL}'\nLIMEN_FINISH_WEBHOOK_AUTH='Bearer s12-secret'\n`,
+	"LIMEN_FINISH_WEBHOOK_URL='https://hooks.s12.test/one'\nLIMEN_FINISH_WEBHOOK_AUTH='Bearer s12-secret'\n",
 );
+const done = (task: string, flags: string[] = []) => {
+	const id = spawnJob(p, task, flags);
+	assert.equal(waitJob(p, id), "done");
+	return id;
+};
 const handoff = (id: string) => JSON.parse(jobFile(p, id, "handoff.json"));
 const ping = async (id: string) => {
 	await until(p.parent, () => /^(accepted|failed)/.test(jobFile(p, id, "finish-webhook")));
-	const body = requests(p)
+	return requests(p)
 		.map((request) => JSON.parse(request.body))
 		.find((entry) => entry.jobId === id);
-	assert.ok(body, `no ping for ${id}`);
-	return body;
 };
 
-test("a late background notice after the handoff never replaces the result or the webhook reason", async () => {
-	const id = spawnJob(
-		p,
-		"say Handoff: PR https://github.com/o/r/pull/7, 12 tests passed\nlate This late result changes nothing",
-	);
-	assert.equal(waitJob(p, id), "done");
-	assert.equal(jobFile(p, id, "result"), "Handoff: PR https://github.com/o/r/pull/7, 12 tests passed");
+test("a late notice never replaces the handoff; a budget checkpoint ends incomplete, not done", async () => {
+	const pr = "https://github.com/o/r/pull/7";
+	const id = done(`say Handoff: PR ${pr}, 12 tests passed\nlate This late result changes nothing`);
+	assert.equal(jobFile(p, id, "result"), `Handoff: PR ${pr}, 12 tests passed`);
 	assert.equal(jobFile(p, id, "result-late"), "This late result changes nothing");
-	const written = handoff(id);
-	assert.equal(written.status, "done");
-	assert.equal(written.pr_url, "https://github.com/o/r/pull/7");
-	assert.deepEqual(written.tests, ["Handoff: PR https://github.com/o/r/pull/7, 12 tests passed"]);
+	const { status, pr_url, tests } = handoff(id);
+	assert.deepEqual(
+		{ status, pr_url, tests },
+		{ status: "done", pr_url: pr, tests: [`Handoff: PR ${pr}, 12 tests passed`] },
+	);
 	const body = await ping(id);
-	assert.match(body.reason, /^Handoff: PR/);
-	assert.equal(body.prUrl, "https://github.com/o/r/pull/7");
-});
-
-test("a job that ends at a budget checkpoint is incomplete with a reason, not done", async () => {
-	const id = spawnJob(p, "checkpoint\nsay I stopped at the 80% budget signal");
-	assert.equal(waitJob(p, id), "done");
-	const written = handoff(id);
-	assert.equal(written.status, "incomplete");
-	assert.match(written.reason, /budget checkpoint/);
-	const body = await ping(id);
-	assert.equal(body.event, "job.incomplete");
-	assert.equal(body.status, "incomplete");
-	assert.equal(body.jobState, undefined);
-	assert.match(body.reason, /budget checkpoint/);
-	assert.match(body.handoff, /not finished/);
+	assert.deepEqual([body.reason.startsWith("Handoff: PR"), body.prUrl], [true, pr]);
+	const stopped = done("checkpoint\nsay I stopped at the 80% budget signal");
+	assert.equal(handoff(stopped).status, "incomplete");
+	const late = await ping(stopped);
+	assert.deepEqual([late.event, late.status, late.jobState], ["job.incomplete", "incomplete", undefined]);
+	assert.match(
+		`${handoff(stopped).reason} ${late.reason} ${late.handoff}`,
+		/budget checkpoint.*budget checkpoint.*not finished/s,
+	);
 });
 
 test("commits left only on the job branch, with a remote and no PR, are named in the handoff", async () => {
-	const remote = join(p.parent, "remote.git");
-	git(p.parent, "init", "-q", "--bare", remote);
-	git(p.root, "remote", "add", "origin", remote);
+	git(p.parent, "init", "-q", "--bare", join(p.parent, "remote.git"));
+	git(p.root, "remote", "add", "origin", join(p.parent, "remote.git"));
 	git(p.root, "push", "-q", "origin", "main");
-	const id = spawnJob(p, "commit\nsay committed locally");
-	assert.equal(waitJob(p, id), "done");
-	const written = handoff(id);
-	assert.equal(written.unpushed, true);
-	assert.equal(written.commits, 1);
-	assert.match(written.reason, /work only on job branch limen\/.+: 1 commit\(s\), no remote branch and no PR/);
+	const id = done("commit\nsay committed locally");
+	assert.deepEqual([handoff(id).unpushed, handoff(id).commits], [true, 1]);
+	assert.match(handoff(id).reason, /work only on job branch limen\/.+: 1 commit\(s\), no remote branch and no PR/);
 	assert.match((await ping(id)).reason, /work only on job branch/);
 	git(p.root, "push", "-q", "origin", jobFile(p, id, "branch"));
-	const pushed = spawnJob(p, "say nothing new");
-	assert.equal(waitJob(p, pushed), "done");
-	assert.equal(handoff(pushed).unpushed, false);
+	assert.equal(handoff(done("say nothing new")).unpushed, false);
 });
 
 test("a review FAIL files one repair follow-up per failed head, and a second FAIL of that head adds none", async () => {
-	const worker = spawnJob(p, "commit\nsay candidate ready");
-	assert.equal(waitJob(p, worker), "done");
-	const branch = jobFile(p, worker, "branch");
+	const branch = jobFile(p, done("commit\nsay candidate ready"), "branch");
 	const sha = git(p.root, "rev-parse", branch).trim();
-	const review = () => spawnJob(p, `say FAIL ${sha}\nblocking: the scenario breaks`, ["--review", "--branch", branch]);
-	const first = review();
-	assert.equal(waitJob(p, first), "done");
-	const second = review();
-	assert.equal(waitJob(p, second), "done");
-	const followUps = join(p.root, ".limen/follow-ups");
-	assert.deepEqual(readdirSync(followUps), [`${sha}.md`]);
-	assert.match(
-		readFileSync(join(followUps, `${sha}.md`), "utf8"),
-		new RegExp(`Review job ${first} returned FAIL ${sha}`),
+	const [first, second] = [1, 2].map(() =>
+		done(`say FAIL ${sha}\nblocking: it breaks`, ["--review", "--branch", branch]),
 	);
-	assert.equal(handoff(second).follow_up, join(followUps, `${sha}.md`));
+	const followUp = join(p.root, ".limen/follow-ups", `${sha}.md`);
+	assert.deepEqual(readdirSync(join(p.root, ".limen/follow-ups")), [`${sha}.md`]);
+	assert.match(readFileSync(followUp, "utf8"), new RegExp(`Review job ${first} returned FAIL ${sha}`));
+	assert.equal(handoff(second).follow_up, followUp);
 	assert.match(jobFile(p, first, "log"), /review FAIL: filed follow-up/);
 	assert.doesNotMatch(jobFile(p, second, "log"), /review FAIL: filed follow-up/);
 	const body = await ping(first);
-	assert.equal(body.event, "job.review-failed");
-	assert.match(body.handoff, /follow-up/);
-	const pass = spawnJob(p, `say PASS ${sha}`, ["--review", "--branch", branch]);
-	assert.equal(waitJob(p, pass), "done");
-	assert.equal(handoff(pass).follow_up, "");
-	assert.equal(existsSync(join(followUps, `${sha}.md`)), true);
+	assert.deepEqual([body.event, /follow-up/.test(body.handoff)], ["job.review-failed", true]);
+	assert.equal(handoff(done(`say PASS ${sha}`, ["--review", "--branch", branch])).follow_up, "");
+	assert.equal(existsSync(followUp), true);
 });
