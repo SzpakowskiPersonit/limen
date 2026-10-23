@@ -246,6 +246,7 @@ export function senderEnvironment(config: string, event: PlantEvent): NodeJS.Pro
 		LIMEN_FINISH_PLANT: event.plant,
 		LIMEN_FINISH_ID: event.id,
 		LIMEN_FINISH_REASON: event.reason,
+		LIMEN_FINISH_PR_URL: event.prUrl,
 	};
 }
 function senderResult(selection: string, code: number | null, signal: NodeJS.Signals | null, answered: boolean): Sent {

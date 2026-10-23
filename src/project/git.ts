@@ -299,6 +299,14 @@ export function commitList(cwd: string, base: string, branch: string): string | 
 	const result = git(cwd, ["log", "--oneline", `${base}..${branch}`]);
 	return result.status === 0 ? result.stdout.trimEnd() : undefined;
 }
+/** Whether a remote-tracking branch contains `ref`; undefined when the repository has no remote or Git cannot tell. */
+export function onRemoteBranch(cwd: string, ref: string): boolean | undefined {
+	if (!git(cwd, ["remote"]).stdout.trim()) {
+		return undefined;
+	}
+	const result = git(cwd, ["branch", "-r", "--contains", ref]);
+	return result.status === 0 ? Boolean(result.stdout.trim()) : undefined;
+}
 /** Commits only `paths`, as they are in the working tree, beside whatever else is staged or changed; returns the short SHA. */
 export function commitPaths(cwd: string, paths: readonly string[], message: string): string {
 	requireGit(cwd, ["add", "-A", "--", ...paths]);
