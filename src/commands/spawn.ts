@@ -31,6 +31,7 @@ import {
 	planningSource,
 	privatePlanningFile,
 	privatePlanningTask,
+	rewriteTicketPaths,
 	ticketPointers,
 } from "../project/planning.ts";
 import { signalProcessGroup, waitForProcessGroup } from "../runtime/contain.ts";
@@ -807,12 +808,7 @@ export async function capturedVersions(profile: EngineProfile): Promise<string> 
 	return `${profile.id} ${version}\n${herdrVersion ? `herdr ${herdrVersion}\n` : ""}${hunkVersion ? `hunk ${hunkVersion}\n` : ""}`;
 }
 function workspaceTask(task: string, root: string, repo: string): string {
-	let rewritten = task;
-	for (const { pointer, path } of ticketPointers(task)) {
-		if (path.startsWith("spec/")) {
-			rewritten = rewritten.replace(pointer, pointer.replace(path, `${root}/${path}`));
-		}
-	}
+	const rewritten = rewriteTicketPaths(task, (path) => (path.startsWith("spec/") ? `${root}/${path}` : undefined));
 	return `Repository: ${repo}. Work only in this repository.\n\n${rewritten}`;
 }
 export function normalizeLabel(value: string): string {

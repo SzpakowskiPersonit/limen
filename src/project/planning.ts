@@ -58,22 +58,65 @@ export async function privatePlanningFile(root: string, path: string): Promise<s
 	return absolute;
 }
 
-/** Read every `Ticket:` path, preserving order and excluding sentence punctuation. */
-export function ticketPointers(task: string): Array<{ path: string; pointer: string }> {
-	return [...task.matchAll(/\bTicket:\s+(\S+)/g)].flatMap(([pointer, token]) => {
-		const path = token?.replace(/[.,;:!?)\]'"`]+$/, "");
-		return path ? [{ path, pointer }] : [];
+/**
+ * Read every `Ticket:` directive path, preserving order and excluding sentence punctuation. A directive starts a line
+ * (after at most three spaces and an optional list marker) or a new sentence. Text in a fenced block, a code span,
+ * a block quote or quotation marks only mentions a pointer, so it holds none. `start` is the path's offset in `task`.
+ */
+export function ticketPointers(task: string): Array<{ path: string; start: number }> {
+	const prose = proseOnly(task);
+	const directive = /(?:^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?|(?<=[.!?])[ \t]+)Ticket:[ \t]+([^\s\0]+)(?=\s|$)/gm;
+	return [...prose.matchAll(directive)].flatMap((match) => {
+		const [whole, token = ""] = match;
+		const path = token.replace(/[.,;:!?)\]'"`]+$/, "");
+		const start = match.index + whole.length - token.length;
+		return path ? [{ path, start }] : [];
 	});
+}
+
+/** Replace each `Ticket:` path in place; `rewrite` returns the new path, or undefined to keep it. */
+export function rewriteTicketPaths(task: string, rewrite: (path: string) => string | undefined): string {
+	let result = task;
+	for (const { path, start } of ticketPointers(task).reverse()) {
+		const next = rewrite(path);
+		if (next !== undefined) {
+			result = `${result.slice(0, start)}${next}${result.slice(start + path.length)}`;
+		}
+	}
+	return result;
 }
 
 /** Check each `Ticket:` path in the task and replace it with its absolute path in the canonical root. */
 export async function privatePlanningTask(root: string, task: string): Promise<string> {
-	let result = task;
-	for (const { pointer, path } of ticketPointers(task)) {
-		const absolute = await privatePlanningFile(root, path);
-		result = result.replace(pointer, pointer.replace(path, absolute));
+	const absolute = new Map<string, string>();
+	for (const { path } of ticketPointers(task)) {
+		absolute.set(path, await privatePlanningFile(root, path));
 	}
-	return result;
+	return rewriteTicketPaths(task, (path) => absolute.get(path));
+}
+
+/** The task with every fenced block, block-quote line, code span and quoted run turned to NUL, offsets unchanged. */
+function proseOnly(task: string): string {
+	const blank = (text: string) => text.replace(/[^\n]/g, "\0");
+	let fence: string | undefined;
+	const lines = task.split("\n").map((line) => {
+		const [, marker = "", rest = ""] = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line) ?? [];
+		if (fence) {
+			if (marker[0] === fence[0] && marker.length >= fence.length && !rest.trim()) {
+				fence = undefined;
+			}
+			return blank(line);
+		}
+		if (marker && !(marker[0] === "`" && rest.includes("`"))) {
+			fence = marker;
+			return blank(line);
+		}
+		return /^ {0,3}>/.test(line) ? blank(line) : line;
+	});
+	return lines
+		.join("\n")
+		.replace(/(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g, blank)
+		.replace(/"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<![\p{L}\p{N}])'[^'\n]*'(?![\p{L}\p{N}])/gu, blank);
 }
 
 /** System-prompt lines for a session that reads private planning from the canonical root. */
