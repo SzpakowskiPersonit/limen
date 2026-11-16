@@ -190,8 +190,8 @@ export function listWorktrees(cwd: string): readonly GitWorktree[] {
 export function worktreeForBranch(cwd: string, branch: string): GitWorktree | undefined {
 	return listWorktrees(cwd).find((worktree) => worktree.branch === branch);
 }
-export function addNewWorktree(cwd: string, path: string, branch: string): void {
-	requireGit(cwd, ["worktree", "add", "-b", branch, path, "HEAD"]);
+export function addNewWorktree(cwd: string, path: string, branch: string, base: string): void {
+	requireGit(cwd, ["worktree", "add", "-b", branch, path, base]);
 }
 export function addBranchWorktree(cwd: string, path: string, branch: string): void {
 	requireGit(cwd, ["worktree", "add", path, branch]);
@@ -223,16 +223,40 @@ export const NO_COMMIT = "this repository has no commit yet; commit once, then s
 export function hasCommit(cwd: string): boolean {
 	return git(cwd, ["rev-parse", "--verify", "HEAD"]).status === 0;
 }
+/**
+ * The commit a new job branch starts from: HEAD, or its fetched upstream when HEAD is only behind it.
+ * A main checkout that nobody pulled must not hand a job an old tree.
+ */
 export function spawnBaseCommit(cwd: string): string {
 	const result = git(cwd, ["rev-parse", "--verify", "HEAD"]);
 	if (result.status === 0) {
-		return result.stdout.trim();
+		return upstreamAhead(cwd, result.stdout.trim());
 	}
 	const branch = git(cwd, ["symbolic-ref", "--quiet", "HEAD"]);
 	if (branch.status === 0 && git(cwd, ["show-ref", "--verify", "--quiet", branch.stdout.trim()]).status === 1) {
 		throw new Error(NO_COMMIT);
 	}
 	throw new Error(result.stderr.trim() || result.stdout.trim() || "git rev-parse failed");
+}
+function upstreamAhead(cwd: string, head: string): string {
+	const branch = git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.trim();
+	const remote = branch ? git(cwd, ["config", `branch.${branch}.remote`]).stdout.trim() : "";
+	const merge = branch ? git(cwd, ["config", `branch.${branch}.merge`]).stdout.trim() : "";
+	if (!remote || !merge) {
+		return head;
+	}
+	const name = git(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).stdout.trim();
+	const fetched = git(cwd, ["fetch", "--quiet", "--no-tags", remote, merge]);
+	if (fetched.status !== 0) {
+		process.stderr.write(`limen: cannot fetch ${name || merge}; the job starts from HEAD: ${fetched.stderr.trim()}\n`);
+	}
+	const upstream = git(cwd, ["rev-parse", "--verify", "--quiet", "@{upstream}^{commit}"]).stdout.trim();
+	if (!upstream || upstream === head || git(cwd, ["merge-base", "--is-ancestor", head, upstream]).status !== 0) {
+		return head;
+	}
+	const behind = git(cwd, ["rev-list", "--count", `${head}..${upstream}`]).stdout.trim();
+	process.stderr.write(`limen: ${cwd} is ${behind} commits behind ${name}; the job starts from ${name} (${upstream.slice(0, 12)})\n`);
+	return upstream;
 }
 export function currentBranch(cwd: string): string {
 	return requireGit(cwd, ["symbolic-ref", "--short", "HEAD"]).stdout.trim();

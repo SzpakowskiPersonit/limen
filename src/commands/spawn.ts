@@ -85,7 +85,7 @@ type WorktreePlan =
 	| { readonly kind: "detach"; readonly path: string; readonly ref: string }
 	| { readonly kind: "reuse"; readonly path: string }
 	| { readonly kind: "add-branch"; readonly path: string; readonly branch: string }
-	| { readonly kind: "add-new"; readonly path: string; readonly branch: string };
+	| { readonly kind: "add-new"; readonly path: string; readonly branch: string; readonly base: string };
 const HANDSHAKE_POLL_MS = 20;
 const handshakeMs = (): number =>
 	Number(process.env.LIMEN_HANDSHAKE_MS) > 0 ? Number(process.env.LIMEN_HANDSHAKE_MS) : 10_000;
@@ -341,7 +341,7 @@ async function recordSpawnedJob(launch: SpawnLaunch): Promise<void> {
 	if (pinnedHead && branchCommit(repository, branch) !== pinnedHead) {
 		throw new Error(`pinned review head moved before spawn: ${branch} is not at ${pinnedHead}`);
 	}
-	const baseCommit = plan.kind === "add-new" ? spawnBaseCommit(repository) : branchCommit(repository, branch);
+	const baseCommit = plan.kind === "add-new" ? plan.base : branchCommit(repository, branch);
 	if (source === "committed") {
 		assertTicketsAtBase(repository, baseCommit, task);
 	}
@@ -614,7 +614,7 @@ async function planWorktree(input: {
 		return { kind: "detach", path, ref: branch };
 	}
 	if (!branchExists(root, branch)) {
-		return { kind: "add-new", path, branch };
+		return { kind: "add-new", path, branch, base: spawnBaseCommit(root) };
 	}
 	const existing = worktreeForBranch(root, branch);
 	if (existing && resolve(existing.path) === resolve(root)) {
@@ -635,7 +635,7 @@ function executeWorktree(root: string, plan: WorktreePlan): string {
 		addBranchWorktree(root, plan.path, plan.branch);
 	}
 	if (plan.kind === "add-new") {
-		addNewWorktree(root, plan.path, plan.branch);
+		addNewWorktree(root, plan.path, plan.branch, plan.base);
 	}
 	return plan.path;
 }
