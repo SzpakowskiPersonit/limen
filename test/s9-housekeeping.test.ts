@@ -11,6 +11,7 @@ import {
 	git,
 	jobDir,
 	jobFile,
+	LIMEN,
 	limen,
 	type Plant,
 	plant,
@@ -130,6 +131,37 @@ test("a killed wrapper is reaped at once and a stopped job leaves no escaped chi
 	assert.deepEqual([wakes(coordinator, killed), wakes(coordinator, stopped)], [1, 1]);
 	await release(coordinator);
 	await new Promise((resolve) => session.once("exit", resolve));
+});
+
+const bus = process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, "bus") : "";
+test("a job spawned inside another job's systemd scope outlives that scope", {
+	skip: !(process.platform === "linux" && bus && existsSync(bus)) && "no systemd user manager",
+}, async () => {
+	const env = { XDG_RUNTIME_DIR: String(process.env.XDG_RUNTIME_DIR) };
+	const unit = `limen-test-parent-${process.pid}-${Date.now()}`;
+	const spawned = join(p.parent, "nested-id");
+	// The parent job's engine: a scope that spawns a job, then stays alive like an agent still working.
+	spawn(
+		"systemd-run",
+		["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, "-p", "TimeoutStopSec=2s", "--"].concat([
+			"sh",
+			"-c",
+			`"$0" "$1" spawn block > "$2"; exec sleep 600`,
+			process.execPath,
+			LIMEN,
+			spawned,
+		]),
+		{ cwd: p.root, env: { ...p.env, ...env }, stdio: "ignore" },
+	);
+	await until(p.parent, () => existsSync(spawned) && readFileSync(spawned, "utf8").endsWith("\n"));
+	const id = readFileSync(spawned, "utf8").trim().split("\n").at(-1) ?? "";
+	await until(jobDir(p, id), () => existsSync(join(jobDir(p, id), "fake-blocked-1")));
+	execFileSync("systemctl", ["--user", "stop", `${unit}.scope`], { env: { ...process.env, ...env } });
+	const pid = Number(jobFile(p, id, "pid"));
+	const listed = limen(p, ["jobs", id], { env: { LIMEN_REAP_CONFIRM_MS: "1" } });
+	assert.deepEqual([alive(pid), listed.status, jobFile(p, id, "state")], [true, 0, "running"], listed.stderr);
+	await release(jobDir(p, id));
+	assert.equal(waitJob(p, id), "done");
 });
 
 test("seat registrations survive a dead-owner registry lock under contention", async () => {

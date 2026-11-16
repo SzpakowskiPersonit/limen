@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, readFile, rm } from "node:fs/promises";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promptStartNotice } from "../integrations/coordinator-wake.ts";
 import { jobMembership } from "../job/group-cabinet.ts";
@@ -42,12 +44,15 @@ export async function launchWrapper(environment: Readonly<Record<string, string>
 export async function launchHostedSupervisor(environment: Readonly<Record<string, string>>): Promise<number> {
 	return launchDetached({ LIMEN_HOSTED_RECOVER: "", ...environment, LIMEN_INTERNAL_HOSTED: "1" });
 }
+// A job's owner gets its own systemd user scope, so stopping the scope of the job that spawned it does not kill it.
 async function launchDetached(environment: Readonly<Record<string, string>>): Promise<number> {
 	const executable = fileURLToPath(new URL("../../bin/limen", import.meta.url));
-	const child = spawn(process.execPath, [executable], {
+	const env = { ...process.env, ...environment };
+	const [command = process.execPath, ...args] = [...scopePrefix(env), process.execPath, executable];
+	const child = spawn(command, args, {
 		detached: true,
 		stdio: "ignore",
-		env: { ...process.env, ...environment },
+		env,
 	});
 	await new Promise<void>((resolve, reject) => {
 		child.once("spawn", resolve);
@@ -58,6 +63,16 @@ async function launchDetached(environment: Readonly<Record<string, string>>): Pr
 	}
 	child.unref();
 	return child.pid;
+}
+/** `systemd-run` argv that moves the started process into a new user scope; empty where no user manager runs. */
+function scopePrefix(env: NodeJS.ProcessEnv): readonly string[] {
+	const bus = env.XDG_RUNTIME_DIR ? `${env.XDG_RUNTIME_DIR}/bus` : "";
+	const systemdRun = ["/usr/bin/systemd-run", "/bin/systemd-run"].find((path) => existsSync(path));
+	if (process.platform !== "linux" || !systemdRun || !bus || !existsSync(bus)) {
+		return [];
+	}
+	const id = basename(env.LIMEN_JOB_DIR ?? "job").replace(/[^A-Za-z0-9_-]/g, "_");
+	return [systemdRun, "--user", "--scope", "--quiet", "--collect", `--unit=limen-job-${id}-owner-${Date.now()}`, "--"];
 }
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: split pending: internal job runner
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: same split as the line above
