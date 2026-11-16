@@ -1,6 +1,6 @@
 // S9 · sweep, prune and recovery: a dead or finished job is cleaned up, a live one is not. One plant, real bin/limen.
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeSync } from "node:fs";
 import { mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -80,7 +80,6 @@ test("spawn returns before --prepare; prune keeps live, nested and starting work
 	for (const kept of [liveTree, nestedTree, halfTree, jobDir(p, half), nestedDir, ...others]) {
 		assert.ok(existsSync(kept), `prune removed ${kept}`);
 	}
-
 	await writeFile(gate, "go\n");
 	assert.equal(waitJob(p, half), "done");
 	await release(nestedDir);
@@ -94,19 +93,21 @@ test("spawn returns before --prepare; prune keeps live, nested and starting work
 	await release(jobDir(p, live));
 	assert.equal(waitJob(p, live), "done");
 });
-
-test("a killed wrapper is reaped at once and a stopped job leaves no escaped child; each wakes the coordinator once", async () => {
+test("a job outlives the systemd scope of the job that spawned it; once killed it is reaped at once; a stopped job leaves no escaped child; each wakes the coordinator once", async () => {
 	const env = { PI_SESSION_ID: SESSION };
-	const killed = spawnJob(p, "block", [], { env });
+	const scope = existsSync(`${p.env.XDG_RUNTIME_DIR}/bus`) ? `systemd-run --user --scope -us9-${process.pid}` : "";
+	const run = { cwd: p.root, env: { ...p.env, ...env } };
+	const out = execSync(`${scope} "${process.execPath}" "${LIMEN}" spawn block`, run);
+	const killed = `${out}`.trim().replace(/.*\n/s, "");
 	await until(jobDir(p, killed), () => existsSync(join(jobDir(p, killed), "fake-blocked-1")));
+	spawnSync("systemctl", ["--user", "stop", `s9-${process.pid}.scope`]);
 	const pid = Number(jobFile(p, killed, "pid"));
-	assert.ok(pid > 0, "the wrapper recorded its pid");
+	assert.deepEqual([alive(pid), jobFile(p, killed, "state")], [true, "running"], "the job died with the parent scope");
 	process.kill(pid, "SIGKILL");
 	// A young job: only the product's dead-pid confirmation window applies, never the startup grace.
 	const listed = limen(p, ["jobs", killed], { env: { LIMEN_REAP_CONFIRM_MS: "1" } });
 	assert.deepEqual([listed.status, jobFile(p, killed, "state")], [0, "failed"], listed.stderr);
 	await release(jobDir(p, killed));
-
 	const stopped = spawnJob(p, "orphan\nblock", [], { env });
 	await until(jobDir(p, stopped), () => existsSync(join(jobDir(p, stopped), "fake-blocked-1")));
 	const orphan = Number(jobFile(p, stopped, "fake-orphan"));
@@ -115,7 +116,6 @@ test("a killed wrapper is reaped at once and a stopped job leaves no escaped chi
 	assert.deepEqual([stop.status, jobFile(p, stopped, "state")], [0, "stopped"], stop.stderr);
 	const named = !alive(orphan) || jobFile(p, stopped, "cleanup").includes(`${orphan} `);
 	assert.ok(named, `orphan ${orphan} survived stop unnamed`);
-
 	const coordinator = join(p.parent, "coordinator");
 	await mkdir(coordinator);
 	await writeFile(join(coordinator, "task.md"), "block\n");
@@ -132,38 +132,6 @@ test("a killed wrapper is reaped at once and a stopped job leaves no escaped chi
 	await release(coordinator);
 	await new Promise((resolve) => session.once("exit", resolve));
 });
-
-const bus = process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, "bus") : "";
-test("a job spawned inside another job's systemd scope outlives that scope", {
-	skip: !(process.platform === "linux" && bus && existsSync(bus)) && "no systemd user manager",
-}, async () => {
-	const env = { XDG_RUNTIME_DIR: String(process.env.XDG_RUNTIME_DIR) };
-	const unit = `limen-test-parent-${process.pid}-${Date.now()}`;
-	const spawned = join(p.parent, "nested-id");
-	// The parent job's engine: a scope that spawns a job, then stays alive like an agent still working.
-	spawn(
-		"systemd-run",
-		["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, "-p", "TimeoutStopSec=2s", "--"].concat([
-			"sh",
-			"-c",
-			`"$0" "$1" spawn block > "$2"; exec sleep 600`,
-			process.execPath,
-			LIMEN,
-			spawned,
-		]),
-		{ cwd: p.root, env: { ...p.env, ...env }, stdio: "ignore" },
-	);
-	await until(p.parent, () => existsSync(spawned) && readFileSync(spawned, "utf8").endsWith("\n"));
-	const id = readFileSync(spawned, "utf8").trim().split("\n").at(-1) ?? "";
-	await until(jobDir(p, id), () => existsSync(join(jobDir(p, id), "fake-blocked-1")));
-	execFileSync("systemctl", ["--user", "stop", `${unit}.scope`], { env: { ...process.env, ...env } });
-	const pid = Number(jobFile(p, id, "pid"));
-	const listed = limen(p, ["jobs", id], { env: { LIMEN_REAP_CONFIRM_MS: "1" } });
-	assert.deepEqual([alive(pid), listed.status, jobFile(p, id, "state")], [true, 0, "running"], listed.stderr);
-	await release(jobDir(p, id));
-	assert.equal(waitJob(p, id), "done");
-});
-
 test("seat registrations survive a dead-owner registry lock under contention", async () => {
 	const registry = join(p.parent, ".limen/projects"),
 		lock = `${registry}.lock`,

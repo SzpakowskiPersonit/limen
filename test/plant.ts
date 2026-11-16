@@ -61,6 +61,7 @@ export async function plant(): Promise<Plant> {
 		PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
 		HOME: join(parent, "home"),
 		TMPDIR: tmpdir(),
+		XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? "", // jobs start in their own systemd scope where one runs
 		LIMEN_HOME: parent,
 		LIMEN_HERDR: "0",
 		LIMEN_HUNK: "0",
