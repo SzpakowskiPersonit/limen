@@ -489,7 +489,11 @@ function jobRecord(loaded: LoadedJob, facts: JobFacts): JobRecord {
 		...(recordedTools !== undefined ? { toolCalls: recordedTools } : {}),
 		...(empty ? { producedNothing: true } : {}),
 		...(fields.lastTool ? { lastTool: displayed(fields.lastTool, detailed) } : {}),
-		...((job.phase === "failed" || job.phase === "stopped") && reason && reason !== "see log" ? { reason } : {}),
+		...((job.phase === "failed" || job.phase === "stopped" || job.phase === "incomplete") &&
+		reason &&
+		reason !== "see log"
+			? { reason }
+			: {}),
 		elapsedMs: observedAt - facts.startedAt.getTime(),
 		silentMs: observedAt - logStat.mtimeMs,
 		...(running ? {} : { ageMs: Date.now() - observedAt }),

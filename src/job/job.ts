@@ -9,6 +9,7 @@ export type Job = JobIdentity &
 		| { readonly phase: "done" }
 		| { readonly phase: "failed"; readonly error: string }
 		| { readonly phase: "stopped"; readonly reason: string }
+		| { readonly phase: "incomplete"; readonly reason: string }
 	);
 export type JobInput = {
 	readonly id: string;
@@ -20,8 +21,9 @@ export type JobInput = {
 	readonly lastOutputAt: Date;
 	readonly detail: string;
 };
-export type TerminalState = "done" | "failed" | "stopped";
-export const TERMINAL_STATES: readonly TerminalState[] = ["done", "failed", "stopped"];
+/** `incomplete`: a budget (time or tool calls) ended the job; the worker's state is in `handoff`, never `done`. */
+export type TerminalState = "done" | "failed" | "stopped" | "incomplete";
+export const TERMINAL_STATES: readonly TerminalState[] = ["done", "failed", "stopped", "incomplete"];
 export const isTerminal = (state: string): state is TerminalState =>
 	(TERMINAL_STATES as readonly string[]).includes(state);
 /** A session ID that is safe as one path segment, for example under `notify/delivered/`. */
@@ -43,6 +45,7 @@ const PHASE_LABELS = {
 	done: "DONE",
 	failed: "FAILED",
 	stopped: "STOPPED",
+	incomplete: "INCOMPLETE",
 } as const satisfies Record<Job["phase"], string>;
 export function parseJob(input: JobInput): Job {
 	if (!input.id || !input.label || !input.branch) {
@@ -67,6 +70,8 @@ export function parseJob(input: JobInput): Job {
 			return { ...identity, phase: "failed", error: input.detail || "see log" };
 		case "stopped":
 			return { ...identity, phase: "stopped", reason: input.detail || "see log" };
+		case "incomplete":
+			return { ...identity, phase: "incomplete", reason: input.detail || "see log" };
 		default:
 			throw new Error(`job ${input.id} has unknown state ${JSON.stringify(input.state)}`);
 	}
@@ -227,7 +232,7 @@ function terminalDetail(job: Job): string {
 	if (job.phase === "failed") {
 		return job.error;
 	}
-	if (job.phase === "stopped") {
+	if (job.phase === "stopped" || job.phase === "incomplete") {
 		return job.reason;
 	}
 	return "";

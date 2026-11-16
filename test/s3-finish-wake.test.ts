@@ -5,7 +5,7 @@
 // the delivered record exists every wake the job will cause for that session is already recorded.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -118,7 +118,19 @@ test("stop, timeout and the tool cap each end a job once and wake its session on
 	await until(jobDir(p, ids.stopped), () => existsSync(join(jobDir(p, ids.stopped), "fake-blocked-1")));
 	assert.equal(limen(p, ["stop", ids.stopped, "test stop"]).status, 0);
 	const states = Object.fromEntries(Object.entries(ids).map(([name, id]) => [name, waitJob(p, id)]));
-	assert.deepEqual(states, { stopped: "stopped", timeout: "failed", cap: "failed" });
+	assert.deepEqual(states, { stopped: "stopped", timeout: "incomplete", cap: "incomplete" });
+	// A budget end is incomplete, never done, and leaves a handoff. The time budget steers the worker to wrap up at 80%.
+	for (const id of [ids.timeout, ids.cap]) {
+		assert.match(jobFile(p, id, "handoff"), /^# Handoff: job incomplete \((?:timeout after|tool-call cap reached)/);
+	}
+	assert.match(jobFile(p, ids.cap, "log"), /worker started; budget: .*, 1 tool calls/);
+	assert.match(jobFile(p, ids.timeout, "log"), /budget warning: 80% of 1s used; wrap-up steer queued/);
+	const steers = join(jobDir(p, ids.timeout), "steer");
+	const queued = readdirSync(steers, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+	assert.ok(
+		queued.some((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8").includes("Wrap up now")),
+		"the timeout job got the wrap-up steer",
+	);
 	// Each ending has one finished-at stamp. Timeout and the tool cap race the engine's own exit and log one terminal line.
 	// A stop still logs two when the engine exits at once on TERM: stop.ts's 25 ms grace races the wrapper's finalize.
 	// The planned exclusive finalize (F928) fixes it; add ids.stopped to the line count when it lands.
@@ -126,7 +138,7 @@ test("stop, timeout and the tool cap each end a job once and wake its session on
 		assert.ok(Number.isFinite(Date.parse(jobFile(p, id, "finished-at"))), `${name} has one stamp`);
 	}
 	for (const id of [ids.timeout, ids.cap]) {
-		assert.equal(jobFile(p, id, "log").match(/\] (?:done|failed|stopped):/g)?.length, 1, id);
+		assert.equal(jobFile(p, id, "log").match(/\] (?:done|failed|stopped|incomplete):/g)?.length, 1, id);
 	}
 	await delivered(Object.values(ids));
 	wokeOnce(ids, [coord]);

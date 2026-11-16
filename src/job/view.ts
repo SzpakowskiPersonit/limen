@@ -72,9 +72,15 @@ export function formatAge(milliseconds: number): string {
 	return `${Math.floor(hours / 24)}d ago`;
 }
 export function tallyStates(states: readonly string[]): StateTally {
-	const tally = { total: states.length, running: 0, done: 0, failed: 0, stopped: 0, invalid: 0 };
+	const tally = { total: states.length, running: 0, done: 0, failed: 0, stopped: 0, incomplete: 0, invalid: 0 };
 	for (const state of states) {
-		if (state === "running" || state === "done" || state === "failed" || state === "stopped") {
+		if (
+			state === "running" ||
+			state === "done" ||
+			state === "failed" ||
+			state === "stopped" ||
+			state === "incomplete"
+		) {
 			tally[state] += 1;
 		} else {
 			tally.invalid += 1;

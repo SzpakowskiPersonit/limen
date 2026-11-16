@@ -163,9 +163,9 @@ export async function deliverFinishWebhook(
 		`finish webhook: ${result}${result.startsWith("skipped:") ? "" : "; inspect finish-webhook for manual finish-ping retry"}`,
 	);
 }
-/** Timeouts and stalled tools end a job as failed; the webhook names the gate that ended it. */
+/** Budgets end a job as incomplete and stalled tools as failed; the webhook names the gate that ended it. */
 function terminalKind(state: TerminalState, detail: string): string {
-	if (state === "failed" && detail.startsWith("timeout after ")) {
+	if (state === "incomplete" && detail.startsWith("timeout after ")) {
 		return "job.timed-out";
 	}
 	if (state === "failed" && detail.startsWith("stalled tool ")) {

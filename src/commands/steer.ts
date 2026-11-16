@@ -64,7 +64,7 @@ async function watchedRunning(cwd: string): Promise<ReadonlyArray<{ readonly id:
 	return selected;
 }
 
-async function enqueue(jobDir: string, message: string): Promise<string> {
+export async function enqueue(jobDir: string, message: string): Promise<string> {
 	const inbox = `${jobDir}/steer/inbox`;
 	await mkdir(inbox, { recursive: true });
 	for (let next = (await highest(jobDir)) + 1; next <= 9_999; next += 1) {

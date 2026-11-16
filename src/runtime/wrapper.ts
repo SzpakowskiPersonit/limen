@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { appendFile, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { enqueue } from "../commands/steer.ts";
 import { jobMembership } from "../job/group-cabinet.ts";
 import { appendLimenLog, atomicWrite, finalizeJob, isFailedStopReason, writeHandshake } from "../job/record.ts";
 import {
@@ -20,7 +21,33 @@ const HOOK = fileURLToPath(new URL("../../hook", import.meta.url));
 // A job is one short turn. These bounds stop a silent runaway from burning a session; they are not a review gate.
 const DEFAULT_TIMEOUT_MS = 90 * 60_000;
 const MAX_TOOL_CALLS = 900;
+/** Share of the time budget after which the worker is told to wrap up and hand off. */
+const WARN_AT = 0.8;
 const toolCallCap = (): number => Number(process.env.LIMEN_MAX_TOOL_CALLS) || MAX_TOOL_CALLS;
+const minutes = (ms: number): string => (ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`);
+/** A budget that ends the job leaves it incomplete, never done; the worker's last words go to `handoff`. */
+async function writeHandoff(
+	jobDir: string,
+	reason: string,
+	facts: { elapsedMs: number; timeoutMs: number; tools: number; cap: number; tool: string; assistant: string },
+): Promise<void> {
+	await atomicWrite(
+		`${jobDir}/handoff`,
+		[
+			`# Handoff: job incomplete (${reason})`,
+			"",
+			`- time: ${minutes(facts.elapsedMs)} of ${minutes(facts.timeoutMs)}`,
+			`- tool calls: ${facts.tools} of ${facts.cap}`,
+			`- last tool: ${facts.tool || "none"}`,
+			"- commits: see `commits`; uncommitted work stays in the worktree",
+			"",
+			"## Last worker message",
+			"",
+			facts.assistant || "(none)",
+			"",
+		].join("\n"),
+	);
+}
 export async function launchWrapper(environment: Readonly<Record<string, string>>): Promise<number> {
 	return launchDetached({ ...environment, LIMEN_INTERNAL_RUN: "1" });
 }
@@ -80,7 +107,8 @@ export async function runInternalJob(): Promise<void> {
 		}
 	});
 	let exhaustionTermination = Promise.resolve();
-	const exhaust = (reason: string, captured?: readonly JobProcess[]) => {
+	const startedAt = Date.now();
+	const exhaust = (reason: string, captured?: readonly JobProcess[], state: "failed" | "incomplete" = "failed") => {
 		if (exhausted || stopRequested) {
 			return;
 		}
@@ -102,7 +130,17 @@ export async function runInternalJob(): Promise<void> {
 				graceTimer.unref();
 				void containEscapedDescendants(jobDir, descendants, "after exhaustion").catch(() => {});
 			}
-			await finalizeJob(jobDir, "failed", reason, shutdownDeadline);
+			if (state === "incomplete") {
+				await writeHandoff(jobDir, reason, {
+					elapsedMs: Date.now() - startedAt,
+					timeoutMs,
+					tools,
+					cap: toolCallCap(),
+					tool: seen.tool,
+					assistant: seen.assistant,
+				}).catch(failLog);
+			}
+			await finalizeJob(jobDir, state, reason, shutdownDeadline);
 		})();
 	};
 	const profile = await jobProfile(jobDir);
@@ -158,7 +196,7 @@ export async function runInternalJob(): Promise<void> {
 					() => {
 						tools += 1;
 						if (tools >= toolCallCap()) {
-							exhaust(`tool-call cap reached after ${tools} calls`);
+							exhaust(`tool-call cap reached after ${tools} calls`, undefined, "incomplete");
 						}
 						return tools;
 					},
@@ -187,7 +225,10 @@ export async function runInternalJob(): Promise<void> {
 	});
 	await writeHandshake(jobDir);
 	await atomicWrite(`${jobDir}/state`, "running\n");
-	await appendLimenLog(jobDir, "worker started");
+	await appendLimenLog(
+		jobDir,
+		`worker started; budget: ${minutes(timeoutMs)} (wrap-up steer at ${Math.round(WARN_AT * 100)}%), ${toolCallCap()} tool calls`,
+	);
 	const enginePid = child.pid;
 	const stallWatch: ToolStallWatch = { tool: "", born: "", started: 0 };
 	let observing = false;
@@ -270,9 +311,21 @@ export async function runInternalJob(): Promise<void> {
 			});
 	};
 	const stallTimer = setInterval(checkStall, 3_000);
-	const timeout = setTimeout(() => exhaust(`timeout after ${timeoutMs}ms`), timeoutMs);
+	const warnTimer = setTimeout(() => {
+		const message = `Limen budget: ${Math.round(WARN_AT * 100)}% of this job's time is used (${minutes(Date.now() - startedAt)} of ${minutes(timeoutMs)}). Wrap up now: commit the useful work, then end with your handoff (changes, checks run, what remains). At ${minutes(timeoutMs)} the job ends as incomplete.`;
+		void enqueue(jobDir, message)
+			.then(() =>
+				appendLimenLog(
+					jobDir,
+					`budget warning: ${Math.round(WARN_AT * 100)}% of ${minutes(timeoutMs)} used; wrap-up steer queued`,
+				),
+			)
+			.catch(failLog);
+	}, timeoutMs * WARN_AT);
+	const timeout = setTimeout(() => exhaust(`timeout after ${timeoutMs}ms`, undefined, "incomplete"), timeoutMs);
 	const result = await outcome;
 	clearTimeout(timeout);
+	clearTimeout(warnTimer);
 	clearInterval(stallTimer);
 	if (graceTimer) {
 		clearTimeout(graceTimer);

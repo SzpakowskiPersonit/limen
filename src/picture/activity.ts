@@ -6,7 +6,16 @@ import { textFile } from "../job/record.ts";
 import { processAlive } from "../runtime/contain.ts";
 import { ownerAlive, startingJob } from "../runtime/reap.ts";
 
-export type LiveState = "starting" | "working" | "waiting" | "quiet" | "dead" | "done" | "failed" | "stopped";
+export type LiveState =
+	| "starting"
+	| "working"
+	| "waiting"
+	| "quiet"
+	| "dead"
+	| "done"
+	| "failed"
+	| "stopped"
+	| "incomplete";
 export type LiveJob = {
 	readonly id: string;
 	readonly label: string;
@@ -86,6 +95,7 @@ const RANK: Record<LiveState, number> = {
 	done: 3,
 	failed: 3,
 	stopped: 3,
+	incomplete: 3,
 };
 
 /** The page's view of one job, or nothing when the job is long finished or its record is half written. */
@@ -94,7 +104,7 @@ export function jobActivity(files: JobFiles, now: number): LiveJob | undefined {
 	if (!state) {
 		return undefined;
 	}
-	const terminal = state === "done" || state === "failed" || state === "stopped";
+	const terminal = state === "done" || state === "failed" || state === "stopped" || state === "incomplete";
 	const doing = terminal ? (state === "done" ? "" : files.stopReason.slice(0, 160)) : currentWords(files, state);
 	return {
 		id: files.id,

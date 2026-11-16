@@ -94,6 +94,10 @@ export async function inspectFinishWebhook(jobDir: string): Promise<string> {
 	const state = await textFile(`${jobDir}/state`);
 	if (state === "done") {
 		lines.push("handoff: Job done. Next step: land it, or name the check that still blocks landing.");
+	} else if (state === "incomplete") {
+		lines.push(
+			"handoff: incomplete (a budget ended the job); read handoff in the job directory, then continue or re-scope",
+		);
 	} else if (state === "failed" || state === "stopped") {
 		lines.push(`handoff: ${state}; inspect failure before proceeding`);
 	}
